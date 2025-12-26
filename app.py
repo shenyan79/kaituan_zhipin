@@ -12,15 +12,28 @@ def transform_excel_streamlit(uploaded_file, mode="detail"):
     name_part = os.path.splitext(uploaded_file.name)[0]
     output_name = f"改_{name_part}_{'重量表' if mode == 'weight' else '详情表'}.xlsx"
 
-    df = pd.read_excel(uploaded_file, header=None, engine="openpyxl")
+    # ---------- 安全读取 Excel ----------
+    try:
+        df = pd.read_excel(uploaded_file, header=None, engine="openpyxl")
+    except ImportError:
+        st.error("❌ 当前环境缺少 openpyxl，请在 requirements.txt 中加入 openpyxl")
+        st.stop()
+    except Exception as e:
+        st.error(f"❌ Excel 读取失败：{e}")
+        st.stop()
 
-    # ---------- 1. 分类（第2行） ----------
+    # 基础结构校验
+    if df.shape[0] < 6 or df.shape[1] < 3:
+        st.error("❌ Excel 格式不符合要求（行或列不足）")
+        st.stop()
+
+    # ---------- 1. 分类（第2行，index=1） ----------
     col_to_category = {}
     for col in range(2, df.shape[1]):
         v = df.iloc[1, col]
         col_to_category[col] = str(v).strip() if pd.notna(v) and str(v).strip() else ""
 
-    # ---------- 2. 制品名称（第3行） ----------
+    # ---------- 2. 制品名称（第3行，index=2） ----------
     product_names = {}
     for col in range(2, df.shape[1]):
         v = df.iloc[2, col]
@@ -28,13 +41,17 @@ def transform_excel_streamlit(uploaded_file, mode="detail"):
             break
         product_names[col] = str(v).strip()
 
-    # ---------- 3. 重量（第1行） ----------
+    if not product_names:
+        st.error("❌ 未识别到任何制品名称（第3行为空）")
+        st.stop()
+
+    # ---------- 3. 重量（第1行，index=0） ----------
     product_weights = {
         col: float(df.iloc[0, col]) if is_valid_number(df.iloc[0, col]) else None
         for col in product_names
     }
 
-    # ---------- 4. 单价（第4行） ----------
+    # ---------- 4. 单价（第4行，index=3） ----------
     product_prices = {
         col: float(df.iloc[3, col]) if is_valid_number(df.iloc[3, col]) else 0.0
         for col in product_names
@@ -42,7 +59,7 @@ def transform_excel_streamlit(uploaded_file, mode="detail"):
 
     results = []
 
-    # ---------- 5. 人员数据（第6行起） ----------
+    # ---------- 5. 人员数据（第6行起，index=5） ----------
     for i in range(5, len(df)):
         name_cell = df.iloc[i, 1]
         if pd.isna(name_cell):
@@ -63,9 +80,9 @@ def transform_excel_streamlit(uploaded_file, mode="detail"):
             cnt = int(cnt)
             total_count += cnt
 
-            cat = col_to_category[col]
-            weight = product_weights[col]
-            price = product_prices[col]
+            cat = col_to_category.get(col, "")
+            weight = product_weights.get(col)
+            price = product_prices.get(col, 0.0)
 
             if weight is not None:
                 total_weight += cnt * weight
@@ -90,8 +107,13 @@ def transform_excel_streamlit(uploaded_file, mode="detail"):
 
         results.append(row)
 
+    if not results:
+        st.warning("⚠️ 未生成任何有效数据，请检查人员数据区域")
+        st.stop()
+
     result_df = pd.DataFrame(results)
 
+    # ---------- 写入 Excel ----------
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
         result_df.to_excel(writer, index=False)
