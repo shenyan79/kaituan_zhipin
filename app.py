@@ -12,7 +12,7 @@ def transform_excel_streamlit(uploaded_file, mode="detail"):
     name_part = os.path.splitext(uploaded_file.name)[0]
     output_name = f"改_{name_part}_{'重量表' if mode == 'weight' else '详情表'}.xlsx"
 
-    df = pd.read_excel(uploaded_file, header=None)
+    df = pd.read_excel(uploaded_file, header=None, engine="openpyxl")
 
     # ---------- 1. 分类（第2行） ----------
     col_to_category = {}
