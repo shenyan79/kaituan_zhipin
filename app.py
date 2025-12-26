@@ -1,133 +1,88 @@
 import streamlit as st
 import pandas as pd
-import os
 import io
+from datetime import datetime
 
-
-def is_valid_number(x):
-    return pd.notna(x) and isinstance(x, (int, float))
-
-
-def transform_excel_streamlit(uploaded_file, mode="detail"):
-    name_part = os.path.splitext(uploaded_file.name)[0]
-    output_name = f"改_{name_part}_{'重量表' if mode == 'weight' else '详情表'}.xlsx"
-
-    # ---------- 安全读取 Excel ----------
-    try:
-        df = pd.read_excel(uploaded_file, header=None, engine="openpyxl")
-    except ImportError:
-        st.error("❌ 当前环境缺少 openpyxl，请在 requirements.txt 中加入 openpyxl")
-        st.stop()
-    except Exception as e:
-        st.error(f"❌ Excel 读取失败：{e}")
-        st.stop()
-
-    # 基础结构校验
-    if df.shape[0] < 6 or df.shape[1] < 3:
-        st.error("❌ Excel 格式不符合要求（行或列不足）")
-        st.stop()
-
-    # ---------- 1. 分类（第2行，index=1） ----------
-    col_to_category = {}
-    for col in range(2, df.shape[1]):
-        v = df.iloc[1, col]
-        col_to_category[col] = str(v).strip() if pd.notna(v) and str(v).strip() else ""
-
-    # ---------- 2. 制品名称（第3行，index=2） ----------
-    product_names = {}
-    for col in range(2, df.shape[1]):
-        v = df.iloc[2, col]
-        if pd.isna(v) or str(v).strip() == "":
-            break
-        product_names[col] = str(v).strip()
-
-    if not product_names:
-        st.error("❌ 未识别到任何制品名称（第3行为空）")
-        st.stop()
-
-    # ---------- 3. 重量（第1行，index=0） ----------
-    product_weights = {
-        col: float(df.iloc[0, col]) if is_valid_number(df.iloc[0, col]) else None
-        for col in product_names
-    }
-
-    # ---------- 4. 单价（第4行，index=3） ----------
-    product_prices = {
-        col: float(df.iloc[3, col]) if is_valid_number(df.iloc[3, col]) else 0.0
-        for col in product_names
-    }
-
-    results = []
-
-    # ---------- 5. 人员数据（第6行起，index=5） ----------
-    for i in range(5, len(df)):
-        name_cell = df.iloc[i, 1]
-        if pd.isna(name_cell):
-            continue
-
-        name = str(name_cell).strip()
-        detail_list = []
-
-        total_count = 0
-        total_weight = 0.0
-        total_money = 0.0
-
-        for col, item in product_names.items():
-            cnt = df.iloc[i, col]
-            if not is_valid_number(cnt) or cnt <= 0:
-                continue
-
-            cnt = int(cnt)
-            total_count += cnt
-
-            cat = col_to_category.get(col, "")
-            weight = product_weights.get(col)
-            price = product_prices.get(col, 0.0)
-
-            if weight is not None:
-                total_weight += cnt * weight
-
-            total_money += cnt * price
-
-            prefix = f"（{cat}）" if cat else ""
-            detail_list.append(f"{prefix}{item}✖{cnt}")
-
-        if not detail_list:
-            continue
-
-        row = {
-            "名字": name,
-            "（分类）制品×数量": " / ".join(detail_list),
-            "总点数": total_count,
-            "总金额": round(total_money, 3)
-        }
-
-        if mode == "weight":
-            row["总重量"] = round(total_weight, 2)
-
-        results.append(row)
-
-    if not results:
-        st.warning("⚠️ 未生成任何有效数据，请检查人员数据区域")
-        st.stop()
-
-    result_df = pd.DataFrame(results)
-
-    # ---------- 写入 Excel ----------
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
-        result_df.to_excel(writer, index=False)
-
-    buffer.seek(0)
-    return result_df, buffer, output_name
-
-
-# ================= Streamlit UI =================
-
-st.set_page_config(page_title="汇总表转换工具", layout="wide")
+st.set_page_config(page_title="汇总表 → 详情表 / 重量表", layout="wide")
 
 st.title("📊 汇总表 → 详情表 / 重量表")
 
+# -------------------------------
+# 核心处理函数
+# -------------------------------
+def transform_excel_streamlit(uploaded_file, mode="detail"):
+    df = pd.read_excel(uploaded_file, header=None)
+
+    # ===== 基础结构约定 =====
+    # 第 1 行：分类
+    # 第 2 行：制品分类
+    # 第 3 行：种类
+    # 第 4 行：单价（关键）
+    # 第 5 行开始：人员数据
+
+    name_col = 0
+    product_start_col = 2
+    price_row = 3        # 单价行（0-based）
+    data_start_row = 5   # 人员数据起始行（0-based）
+
+    prices = df.iloc[price_row, product_start_col:].fillna(0)
+
+    result_rows = []
+
+    for i in range(data_start_row, len(df)):
+        name = df.iloc[i, name_col]
+
+        if pd.isna(name):
+            continue
+
+        quantities = df.iloc[i, product_start_col:].fillna(0)
+
+        total_qty = quantities.sum()
+        total_amount = (quantities * prices).sum()
+
+        for col_idx, qty in quantities.items():
+            if qty == 0:
+                continue
+
+            product_name = df.iloc[2, col_idx]
+            price = prices[col_idx]
+            amount = qty * price
+
+            if mode == "detail":
+                result_rows.append({
+                    "名字": name,
+                    "制品": product_name,
+                    "数量": int(qty),
+                    "单价": round(float(price), 3),
+                    "金额": round(float(amount), 3)
+                })
+
+        if mode == "weight":
+            result_rows.append({
+                "名字": name,
+                "总点数": int(total_qty),
+                "总金额": round(float(total_amount), 3)
+            })
+
+    df_result = pd.DataFrame(result_rows)
+
+    # ==========================
+    # 导出 Excel
+    # ==========================
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df_result.to_excel(writer, index=False)
+
+    buffer.seek(0)
+
+    filename = f"{'详情表' if mode=='detail' else '重量表'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+
+    return df_result, buffer, filename
+
+
+# -------------------------------
+# Streamlit UI
+# -------------------------------
 uploaded_file = st.file_uploader(
     "上传汇总表 Excel（.xlsx）",
     type=["xlsx"]
@@ -135,27 +90,23 @@ uploaded_file = st.file_uploader(
 
 mode = st.radio(
     "选择生成模式",
-    options=["detail", "weight"],
-    format_func=lambda x: "详情表" if x == "detail" else "重量表"
+    ["详情表", "重量表"]
 )
 
-if uploaded_file:
-    if st.button("🚀 生成 Excel"):
-        with st.spinner("正在处理，请稍候..."):
-            df_result, excel_buffer, filename = transform_excel_streamlit(
-                uploaded_file,
-                mode
-            )
-
-        st.success("✅ 生成完成")
-
-        st.dataframe(df_result, use_container_width=True)
-
-        st.download_button(
-            label="⬇ 下载 Excel",
-            data=excel_buffer,
-            file_name=filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+if uploaded_file and st.button("🚀 生成 Excel"):
+    with st.spinner("处理中..."):
+        df_result, excel_buffer, filename = transform_excel_streamlit(
+            uploaded_file,
+            mode="detail" if mode == "详情表" else "weight"
         )
-else:
-    st.info("📌 请先上传 Excel 文件")
+
+    st.success("✅ 生成完成")
+
+    st.dataframe(df_result, use_container_width=True)
+
+    st.download_button(
+        label="⬇️ 下载 Excel",
+        data=excel_buffer,
+        file_name=filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
