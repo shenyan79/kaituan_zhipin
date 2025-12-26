@@ -3,89 +3,85 @@ import pandas as pd
 import os
 import io
 
-# 设置页面配置（必须是 Streamlit 命令的第一行）
+# 设置页面配置
 st.set_page_config(page_title="汇总表转换工具", layout="wide")
 
 def is_valid_number(x):
-    return pd.notna(x) and isinstance(x, (int, float))
+    """判断是否为有效数字"""
+    return pd.notna(x) and isinstance(x, (int, float, complex))
 
 def transform_excel_streamlit(uploaded_file, mode="detail"):
-    # 提取文件名
+    # 1. 准备文件名
     name_part = os.path.splitext(uploaded_file.name)[0]
     output_name = f"改_{name_part}_{'重量表' if mode == 'weight' else '详情表'}.xlsx"
 
-    # 读取 Excel
-    # 注意：确保 header=None，因为后续逻辑是按索引 iloc 读取的
+    # 2. 读取 Excel (header=None 确保我们可以通过索引精准访问行)
     try:
         df = pd.read_excel(uploaded_file, header=None, engine="openpyxl")
     except Exception as e:
-        st.error(f"读取 Excel 失败: {e}")
+        st.error(f"读取失败: {e}")
         return None, None, None
 
-    # ---------- 1. 分类（第2行，索引1） ----------
-    col_to_category = {}
-    for col in range(2, df.shape[1]):
-        v = df.iloc[1, col]
-        col_to_category[col] = str(v).strip() if pd.notna(v) and str(v).strip() else ""
+    # ---------- 核心索引校准 ----------
+    # 第1行 (index 0): 重量
+    # 第2行 (index 1): 分类
+    # 第3行 (index 2): 制品名称
+    # 第4行 (index 3): 单价 (金额)
+    # 第6行起 (index 5): 人员数据
+    # 第2列 (index 1): 名字 (B列)
+    # 第3列起 (index 2): 制品数据 (C列往后)
 
-    # ---------- 2. 制品名称（第3行，索引2） ----------
-    product_names = {}
+    # 获取有效制品的列范围
+    product_cols = []
     for col in range(2, df.shape[1]):
-        v = df.iloc[2, col]
+        v = df.iloc[2, col] # 检查第3行品名
         if pd.isna(v) or str(v).strip() == "":
             break
-        product_names[col] = str(v).strip()
+        product_cols.append(col)
 
-    # ---------- 3. 重量（第1行，索引0） ----------
-    product_weights = {
-        col: float(df.iloc[0, col]) if is_valid_number(df.iloc[0, col]) else None
-        for col in product_names
-    }
-
-    # ---------- 4. 单价（第4行，索引3） ----------
-    product_prices = {
-        col: float(df.iloc[3, col]) if is_valid_number(df.iloc[3, col]) else 0.0
-        for col in product_names
-    }
+    # 提前提取属性，避免在循环中重复计算
+    product_names = {c: str(df.iloc[2, c]).strip() for c in product_cols}
+    product_categories = {c: (str(df.iloc[1, c]).strip() if pd.notna(df.iloc[1, c]) else "") for c in product_cols}
+    product_weights = {c: (float(df.iloc[0, c]) if is_valid_number(df.iloc[0, c]) else 0.0) for c in product_cols}
+    # 对应你说的：制品对应金额在第四行 (index 3)
+    product_prices = {c: (float(df.iloc[3, c]) if is_valid_number(df.iloc[3, c]) else 0.0) for c in product_cols}
 
     results = []
 
-    # ---------- 5. 人员数据（名字在第2列即B列，从第6行即索引5起） ----------
-    # 这里通过 len(df) 动态获取行数，确保 df 已定义
+    # 从第6行 (index 5) 开始遍历人员
     for i in range(5, len(df)):
-        name_cell = df.iloc[i, 1]  # B列 = 索引1
-
-        # 跳过空行
+        name_cell = df.iloc[i, 1]  # B列 = 名字
+        
+        # 名字为空则跳过
         if pd.isna(name_cell) or str(name_cell).strip() == "":
             continue
 
         name = str(name_cell).strip()
         detail_list = []
-
         total_count = 0
         total_weight = 0.0
         total_money = 0.0
 
-        for col, item in product_names.items():
+        for col in product_cols:
             cnt = df.iloc[i, col]
 
             if not is_valid_number(cnt) or cnt <= 0:
                 continue
 
-            cnt = int(cnt)
+            cnt = float(cnt) # 支持半件或整数
             total_count += cnt
+            
+            # 计算逻辑
+            total_weight += cnt * product_weights[col]
+            total_money += cnt * product_prices[col]
 
-            cat = col_to_category.get(col, "")
-            weight = product_weights.get(col)
-            price = product_prices.get(col, 0.0)
-
-            if weight is not None:
-                total_weight += cnt * weight
-
-            total_money += cnt * price
-
+            cat = product_categories[col]
+            item = product_names[col]
             prefix = f"（{cat}）" if cat else ""
-            detail_list.append(f"{prefix}{item}×{cnt}")
+            
+            # 格式化数量：如果是整数则显示整数，否则显示小数
+            cnt_str = int(cnt) if cnt == int(cnt) else cnt
+            detail_list.append(f"{prefix}{item}✖{cnt_str}")
 
         if not detail_list:
             continue
@@ -107,52 +103,34 @@ def transform_excel_streamlit(uploaded_file, mode="detail"):
 
     result_df = pd.DataFrame(results)
 
-    # 输出 Excel 到内存
+    # 输出到 Excel 内存缓冲
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
         result_df.to_excel(writer, index=False)
     buffer.seek(0)
-    
-    return result_df, buffer, output_name
 
+    return result_df, buffer, output_name
 
 # ================= Streamlit UI =================
 
-st.title("📊 汇总表 → 详情表 / 重量表")
-st.markdown("请确保 Excel 格式：第1行重量，第2行分类，第3行品名，第4行单价，第6行起为人员数据。")
+st.title("📊 汇总表 → 转换工具")
 
-uploaded_file = st.file_uploader(
-    "上传汇总表 Excel（.xlsx）",
-    type=["xlsx"]
-)
-
-mode = st.radio(
-    "选择生成模式",
-    options=["detail", "weight"],
-    format_func=lambda x: "详情表 (不含重量)" if x == "detail" else "重量表 (包含总重量)"
-)
+col1, col2 = st.columns([1, 1])
+with col1:
+    uploaded_file = st.file_uploader("1. 上传汇总表 Excel", type=["xlsx"])
+with col2:
+    mode = st.radio("2. 选择模式", ["detail", "weight"], 
+                    format_func=lambda x: "详情表 (含金额)" if x=="detail" else "重量表 (含重量+金额)")
 
 if uploaded_file:
-    # 增加预览功能
-    with st.expander("查看原始文件预览"):
-        preview_df = pd.read_excel(uploaded_file, header=None).head(10)
-        st.dataframe(preview_df)
-
-    if st.button("🚀 开始转换"):
-        with st.spinner("正在处理，请稍候..."):
-            df_result, excel_buffer, filename = transform_excel_streamlit(uploaded_file, mode)
-
-        if df_result is not None and not df_result.empty:
-            st.success("✅ 转换成功！")
-            st.dataframe(df_result, use_container_width=True)
-
-            st.download_button(
-                label="⬇ 下载转换后的 Excel",
-                data=excel_buffer,
-                file_name=filename,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        elif df_result is not None and df_result.empty:
-            st.warning("⚠️ 转换完成，但未发现有效的人员数据，请检查 Excel 格式。")
-else:
-    st.info("📌 请先上传 Excel 文件以开始转换。")
+    if st.button("🚀 点击开始转换"):
+        with st.spinner("处理中..."):
+            res_df, excel_out, fn = transform_excel_streamlit(uploaded_file, mode)
+            
+            if res_df is not None:
+                if res_df.empty:
+                    st.warning("转换完成，但没找到有效数据。请检查：B列是否有名字，第6行以下是否有数字。")
+                else:
+                    st.success(f"处理成功！共处理 {len(res_df)} 行数据。")
+                    st.dataframe(res_df, use_container_width=True)
+                    st.download_button("⬇ 下载结果", excel_out, file_name=fn)
