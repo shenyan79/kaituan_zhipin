@@ -1,112 +1,49 @@
-import streamlit as st
-import pandas as pd
-import io
-from datetime import datetime
+# ---------- 5. 人员数据（第6行起，名字在第2列） ----------
+for i in range(5, len(df)):
+    name_cell = df.iloc[i, 1]  # B列 = 名字
 
-st.set_page_config(page_title="汇总表 → 详情表 / 重量表", layout="wide")
+    if not isinstance(name_cell, str) or not name_cell.strip():
+        continue
 
-st.title("📊 汇总表 → 详情表 / 重量表")
+    name = name_cell.strip()
+    detail_list = []
 
-# -------------------------------
-# 核心处理函数
-# -------------------------------
-def transform_excel_streamlit(uploaded_file, mode="detail"):
-    df = pd.read_excel(uploaded_file, header=None)
+    total_count = 0
+    total_weight = 0.0
+    total_money = 0.0
 
-    # ===== 基础结构约定 =====
-    # 第 1 行：分类
-    # 第 2 行：制品分类
-    # 第 3 行：种类
-    # 第 4 行：单价（关键）
-    # 第 5 行开始：人员数据
+    for col, item in product_names.items():
+        cnt = df.iloc[i, col]
 
-    name_col = 0
-    product_start_col = 2
-    price_row = 3        # 单价行（0-based）
-    data_start_row = 5   # 人员数据起始行（0-based）
-
-    prices = df.iloc[price_row, product_start_col:].fillna(0)
-
-    result_rows = []
-
-    for i in range(data_start_row, len(df)):
-        name = df.iloc[i, name_col]
-
-        if pd.isna(name):
+        if not is_valid_number(cnt) or cnt <= 0:
             continue
 
-        quantities = df.iloc[i, product_start_col:].fillna(0)
+        cnt = int(cnt)
+        total_count += cnt
 
-        total_qty = quantities.sum()
-        total_amount = (quantities * prices).sum()
+        cat = col_to_category[col]
+        weight = product_weights[col]
+        price = product_prices[col]
 
-        for col_idx, qty in quantities.items():
-            if qty == 0:
-                continue
+        if weight is not None:
+            total_weight += cnt * weight
 
-            product_name = df.iloc[2, col_idx]
-            price = prices[col_idx]
-            amount = qty * price
+        total_money += cnt * price
 
-            if mode == "detail":
-                result_rows.append({
-                    "名字": name,
-                    "制品": product_name,
-                    "数量": int(qty),
-                    "单价": round(float(price), 3),
-                    "金额": round(float(amount), 3)
-                })
+        prefix = f"（{cat}）" if cat else ""
+        detail_list.append(f"{prefix}{item}✖{cnt}")
 
-        if mode == "weight":
-            result_rows.append({
-                "名字": name,
-                "总点数": int(total_qty),
-                "总金额": round(float(total_amount), 3)
-            })
+    if not detail_list:
+        continue
 
-    df_result = pd.DataFrame(result_rows)
+    row = {
+        "名字": name,
+        "（分类）制品×数量": " / ".join(detail_list),
+        "总点数": total_count,
+        "总金额": round(total_money, 3)
+    }
 
-    # ==========================
-    # 导出 Excel
-    # ==========================
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df_result.to_excel(writer, index=False)
+    if mode == "weight":
+        row["总重量"] = round(total_weight, 2)
 
-    buffer.seek(0)
-
-    filename = f"{'详情表' if mode=='detail' else '重量表'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-
-    return df_result, buffer, filename
-
-
-# -------------------------------
-# Streamlit UI
-# -------------------------------
-uploaded_file = st.file_uploader(
-    "上传汇总表 Excel（.xlsx）",
-    type=["xlsx"]
-)
-
-mode = st.radio(
-    "选择生成模式",
-    ["详情表", "重量表"]
-)
-
-if uploaded_file and st.button("🚀 生成 Excel"):
-    with st.spinner("处理中..."):
-        df_result, excel_buffer, filename = transform_excel_streamlit(
-            uploaded_file,
-            mode="detail" if mode == "详情表" else "weight"
-        )
-
-    st.success("✅ 生成完成")
-
-    st.dataframe(df_result, use_container_width=True)
-
-    st.download_button(
-        label="⬇️ 下载 Excel",
-        data=excel_buffer,
-        file_name=filename,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+    results.append(row)
